@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FuelLog</title>
+<style>
+  :root { --bg:#f4f6f4; --card:#fff; --ink:#22291f; --muted:#7b8578; --green:#3d8a4f; --red:#c0453e; --amber:#c98a1e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:ui-sans-serif,system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:20px 24px 8px; }
+  h1 { margin:0; font-size:1.5rem; }
+  .sub { color:var(--muted); margin:4px 0 0; font-size:.9rem; }
+  main { max-width:720px; margin:0 auto; padding:12px 16px 40px; }
+  form { background:var(--card); border-radius:12px; padding:14px; display:flex; gap:8px; flex-wrap:wrap; align-items:end; margin-bottom:14px; box-shadow:0 1px 4px rgba(0,0,0,.06); }
+  label { font-size:.75rem; color:var(--muted); display:block; margin-bottom:3px; }
+  input, button { font:inherit; padding:8px 10px; border:1px solid #d5dcd2; border-radius:8px; background:#fff; }
+  input[type=number] { width:110px; }
+  button { background:var(--green); color:#fff; border:none; cursor:pointer; }
+  button.ghost { background:#e8ede5; color:var(--ink); }
+  .stat { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+  .s { background:var(--card); border-radius:10px; padding:10px 16px; box-shadow:0 1px 4px rgba(0,0,0,.05); }
+  .s b { font-size:1.25rem; display:block; }
+  .s span { font-size:.75rem; color:var(--muted); }
+  .trend { font-size:.75rem; font-weight:700; padding:2px 9px; border-radius:999px; display:inline-block; margin-top:4px; }
+  .t-improving { background:#e0f0e2; color:#2e6b2e; }
+  .t-worsening { background:#fae2e1; color:#b23834; }
+  .t-steady { background:#fbf0da; color:#9a6b12; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border-radius:12px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,.06); }
+  th { text-align:left; font-size:.75rem; color:var(--muted); padding:10px 12px; border-bottom:1px solid #e4e9e1; }
+  td { padding:10px 12px; border-bottom:1px solid #f0f3ee; font-size:.9rem; }
+  tr:last-child td { border-bottom:none; }
+  .eff { font-weight:600; }
+  .del { background:none; border:none; color:#b8bfb4; cursor:pointer; font-size:1rem; }
+  .empty { background:var(--card); border-radius:12px; text-align:center; color:var(--muted); padding:32px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FuelLog</h1>
+  <p class="sub">Log each fill-up; see your real km/L between tanks, cost per km, and whether your car is drinking more than it used to.</p>
+</header>
+<main>
+  <form id="add-form">
+    <div><label>Date</label><input type="date" id="f-date" required></div>
+    <div><label>Odometer (km)</label><input type="number" id="f-odo" min="1" step="1" placeholder="45230" required></div>
+    <div><label>Liters</label><input type="number" id="f-lit" min="0.1" step="0.01" placeholder="38.5" required></div>
+    <div><label>Total cost</label><input type="number" id="f-cost" min="0" step="0.01" placeholder="240.00" required></div>
+    <button type="submit">Log fill-up</button>
+  </form>
+  <div class="stat" id="stat"></div>
+  <div id="history"></div>
+</main>
+<script src="engine.js"></script>
+<script>
+(function () {
+  var KEY = 'fuellog-v1';
+  function today() { return new Date().toISOString().slice(0, 10); }
+  function load() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } }
+  function save() { localStorage.setItem(KEY, JSON.stringify(fills)); }
+  var fills = load();
+  document.getElementById('f-date').value = today();
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function render() {
+    var st = FuelLog.stats(fills);
+    var stat = document.getElementById('stat');
+    stat.innerHTML = '';
+    var cards = [
+      ['Avg km/L', st.avgKmPerLiter === null ? '-' : st.avgKmPerLiter],
+      ['Last tank km/L', st.lastKmPerLiter === null ? '-' : st.lastKmPerLiter],
+      ['Cost per km', st.lastCostPerKm === null ? '-' : st.lastCostPerKm],
+      ['Total km', st.totalKm || 0]
+    ];
+    cards.forEach(function (c) {
+      var d = el('div', 's');
+      d.appendChild(el('b', null, String(c[1])));
+      d.appendChild(el('span', null, c[0]));
+      stat.appendChild(d);
+    });
+    if (st.trend) {
+      var t = el('div', 's');
+      t.appendChild(el('b', null, st.trend));
+      t.appendChild(el('span', null, 'Efficiency trend'));
+      stat.appendChild(t);
+    }
+
+    var hist = document.getElementById('history');
+    hist.innerHTML = '';
+    if (!fills.length) {
+      hist.innerHTML = '<div class="empty">No fill-ups yet. Log your next one at the pump - efficiency stats appear from the second fill-up.</div>';
+      return;
+    }
+    var segs = FuelLog.segments(fills);
+    var byId = {};
+    segs.forEach(function (s) { byId[s.fillUp.id] = s; });
+    var table = el('table');
+    table.innerHTML = '<tr><th>Date</th><th>Odometer</th><th>Liters</th><th>Cost</th><th>km/L</th><th>per km</th><th></th></tr>';
+    for (var i = fills.length - 1; i >= 0; i--) {
+      var f = fills[i];
+      var seg = byId[f.id];
+      var tr = el('tr');
+      tr.appendChild(el('td', null, f.date));
+      tr.appendChild(el('td', null, String(f.odometer)));
+      tr.appendChild(el('td', null, String(f.liters)));
+      tr.appendChild(el('td', null, String(f.cost)));
+      tr.appendChild(el('td', 'eff', seg ? (Math.round(seg.kmPerLiter * 100) / 100) + (seg.km === 0 ? '' : '') : '-'));
+      tr.appendChild(el('td', null, seg ? String(Math.round(seg.costPerKm * 100) / 100) : '-'));
+      var delTd = el('td');
+      var del = el('button', 'del', 'x');
+      del.title = 'Delete';
+      (function (id) {
+        del.onclick = function () { FuelLog.removeFillUp(fills, id); save(); render(); };
+      })(f.id);
+      delTd.appendChild(del);
+      tr.appendChild(delTd);
+      table.appendChild(tr);
+    }
+    hist.appendChild(table);
+  }
+
+  document.getElementById('add-form').onsubmit = function (e) {
+    e.preventDefault();
+    try {
+      FuelLog.addFillUp(fills,
+        document.getElementById('f-date').value,
+        document.getElementById('f-odo').value,
+        document.getElementById('f-lit').value,
+        document.getElementById('f-cost').value);
+    } catch (err) { alert(err.message); return; }
+    document.getElementById('f-odo').value = '';
+    document.getElementById('f-lit').value = '';
+    document.getElementById('f-cost').value = '';
+    save(); render();
+  };
+  render();
+})();
+</script>
+</body>
+</html>
